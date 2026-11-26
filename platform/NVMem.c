@@ -94,12 +94,7 @@ static UINT64 s_blockMap = 0x0ULL;
 /* A write back failed: write the dirty blocks before the next command */
 static BOOL s_NVWritePending = FALSE;
 
-//
-// Volatile NV: set while the secure storage backend is not reachable yet
-// (e.g. in the boot loader, before the normal world storage service runs).
-// NV changes then stay in s_NV and are never written back; the state is
-// discarded once storage becomes reachable (see fTPM.c).
-//
+/* Early mode: NV changes stay in memory and are never written back */
 static BOOL s_NVVolatile = FALSE;
 
 //
@@ -314,7 +309,6 @@ _plat__NvWriteBack()
 	UINT32 objID;
 	TEE_Result Result;
 
-	// Nothing is written back while NV is volatile.
 	if (s_NVVolatile) {
 		s_blockMap = 0;
 		return;
@@ -513,8 +507,6 @@ _plat__NVDisable(
     return;
 }
 
-//***_plat__NvSetVolatile()
-// Keep NV changes in memory only (TRUE) or write them back (FALSE).
 void
 _plat__NvSetVolatile(
     int volatileNv
@@ -554,9 +546,7 @@ _plat__NvStorageReachable(
              res == TEE_ERROR_OUT_OF_MEMORY);
 }
 
-//***_plat__NvReset()
-// Drop the NV image in memory (no write back) so that the next
-// _plat__NVEnable() reads it from storage again.
+/* Drop the NV image in memory; the next _plat__NVEnable() reads storage */
 void
 _plat__NvReset(
     void

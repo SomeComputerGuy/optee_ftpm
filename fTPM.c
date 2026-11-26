@@ -133,25 +133,12 @@ static TEE_Result get_tpm_event_log(unsigned char *buf, size_t *len)
 }
 #endif // MEASURED_BOOT
 
-//
-// Early mode: TPM use before secure storage is reachable.
-//
-// The fTPM keeps its NV state in OP-TEE secure storage. With REE FS that
-// storage is served by tee-supplicant, which does not exist before the OS
-// runs, so a boot loader (e.g. U-Boot's tpm2_ftpm_tee driver measuring the
-// kernel) cannot use the fTPM at all: every session used to be refused.
-//
-// Instead, when storage does not answer, the fTPM now starts on a temporary,
-// volatile TPM state (manufactured in memory, never written back) and serves
-// only commands that need no NV: PCR extend/read, capabilities, random
-// numbers, self test. Every successful PCR_Extend/PCR_Event is recorded in a
-// journal. At every session open and command the fTPM checks whether storage
-// answers now; once it does, the volatile state is dropped, the real NV state
-// is loaded, the TPM is started (exactly as at a normal first open) and the
-// journal is replayed, so the PCRs hold the measurements taken before
-// storage was available, followed by everything after. Commands that need NV
-// get TPM_RC_NV_UNAVAILABLE while in early mode.
-//
+/*
+ * Early mode: until secure storage answers (REE FS before tee-supplicant,
+ * e.g. a measuring boot loader), run on a volatile TPM state, serve only
+ * commands that need no NV and journal PCR extends. Once storage answers,
+ * load the real state, start up and replay the journal.
+ */
 #define TPM_ST_NO_SESSIONS          0x8001
 #define TPM_ST_SESSIONS             0x8002
 #define TPM_RS_PW                   0x40000009
@@ -206,10 +193,7 @@ static bool fTPM_early_allowed(uint32_t cc)
     }
 }
 
-//
-// A PCR_Extend/PCR_Event can only be replayed later if it carries exactly one
-// plain password session (the PCR auth value cannot be changed in early mode).
-//
+/* Replayable: one plain password session (PCR auth can't change early) */
 static bool fTPM_journal_ok(const uint8_t *cmd, uint32_t len)
 {
     uint32_t authSize;
@@ -235,9 +219,6 @@ static void fTPM_rc_response(TPM_RC rc, uint32_t *respLen, uint8_t *respBuf)
     *respLen = 10;
 }
 
-//
-// Execute one command in early mode; respBuf/respLen as for ExecuteCommand().
-//
 static void fTPM_early_execute(uint32_t cmdLen, uint8_t *cmdBuf,
                                uint32_t *respLen, uint8_t **respBuf)
 {
@@ -273,11 +254,7 @@ static void fTPM_early_execute(uint32_t cmdLen, uint8_t *cmdBuf,
     }
 }
 
-//
-// Replay the early mode journal on the real TPM state. A replay that fails
-// would leave PCRs that do not match what the boot loader measured: fail
-// closed (the TA stays crashed until the next boot).
-//
+/* A failed replay leaves PCRs that do not match the event log: panic */
 static void fTPM_replay_journal(void)
 {
     uint32_t off = 0;
@@ -302,10 +279,6 @@ static void fTPM_replay_journal(void)
     memset(fTPM_journal, 0, sizeof(fTPM_journal));
 }
 
-//
-// Power up the TPM: load NV (or fall back to a volatile state in early
-// mode), manufacture if needed, _TPM_Init and Startup.
-//
 static void fTPM_power_up(void)
 {
     #define STARTUP_SIZE 0x0C
@@ -331,7 +304,6 @@ static void fTPM_power_up(void)
         TEE_Panic(TEE_ERROR_BAD_STATE);
     }
     else if (nvResult > 0) {
-        // Storage not reachable (yet): early mode on a volatile state
         fTPM_storage_available = false;
         fTPM_early = true;
         _plat__NvSetVolatile(1);
@@ -424,9 +396,6 @@ Exit:
 #endif
 }
 
-//
-// Leave early mode once secure storage answers.
-//
 static void fTPM_try_leave_early_mode(void)
 {
     if (!fTPM_early || !_plat__NvStorageReachable())
@@ -436,7 +405,6 @@ static void fTPM_try_leave_early_mode(void)
     _plat__NvReset();
     fTPM_power_up();
     if (fTPM_early) {
-        // Storage went away again between the check and the load
         EMSG("fTPM: secure storage lost while leaving early mode");
         TEE_Panic(TEE_ERROR_BAD_STATE);
     }
@@ -500,11 +468,9 @@ TEE_Result TA_OpenSessionEntryPoint(uint32_t    param_types,
         return TEE_ERROR_BAD_PARAMETERS;
     }
 
-    // Storage may have become available since the last session (e.g. the
-    // OS started its storage service after the boot loader used the TPM)
     fTPM_try_leave_early_mode();
 
-    // Reject sessions when storage is unavailable and not in early mode
+    /* Reject sessions when storage is unavailable, except in early mode */
     if (!fTPM_storage_available && !fTPM_early) {
         return TEE_ERROR_STORAGE_NOT_AVAILABLE;
     }
@@ -586,7 +552,6 @@ static TEE_Result fTPM_Submit_Command(uint32_t  param_types,
 
     fTPM_try_leave_early_mode();
 
-    // Early mode: only commands that need no NV
     if (fTPM_early) {
         fTPM_early_execute(cmdLen, cmdBuf, &respLen, &respBuf);
     }
@@ -647,7 +612,7 @@ static TEE_Result fTPM_Emulate_PPI(uint32_t  param_types,
         return TEE_ERROR_BAD_PARAMETERS;
     }
 
-    // PPI requests change NV: not possible before storage is available
+    /* PPI requests change NV */
     fTPM_try_leave_early_mode();
     if (fTPM_early) {
         return TEE_ERROR_STORAGE_NOT_AVAILABLE;
