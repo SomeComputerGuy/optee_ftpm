@@ -91,10 +91,7 @@ static TEE_ObjectHandle s_NVStore[NV_BLOCK_COUNT] = { TEE_HANDLE_NULL };
 //
 static UINT64 s_blockMap = 0x0ULL;
 
-//
-// A write back failed (storage briefly gone, e.g. tee-supplicant restarting):
-// the dirty blocks are kept and written before the next command.
-//
+/* A write back failed: write the dirty blocks before the next command */
 static BOOL s_NVWritePending = FALSE;
 
 //
@@ -361,7 +358,7 @@ _plat__NvWriteBack()
     return;
 
 Error:
-	// Keep the dirty blocks; _plat__IsNvAvailable() retries them.
+	/* Keep the dirty blocks; _plat__IsNvAvailable() retries them */
 	DMSG("NV write back failed: 0x%x", Result);
 	s_NVWritePending = TRUE;
 	for (i = 0; i < NV_BLOCK_COUNT; i++) {
@@ -502,14 +499,10 @@ _plat__NVDisable(
     return;
 }
 
-//***_plat__NvStorageReachable()
-// Check, without touching the NV image in memory, whether the secure storage
-// backend answers. "Storage not available" and a failed request to the normal
-// world (no storage service: communication error or no RPC buffer) count as
-// not reachable.
-// return type: BOOL
-//      TRUE        storage answered
-//      FALSE       storage not reachable
+/*
+ * Whether secure storage answers, without touching the NV image in memory.
+ * A failed RPC (no supplicant: no RPC buffer or no answer) is unreachable.
+ */
 static int
 _plat__NvStorageReachable(
     void
@@ -519,8 +512,7 @@ _plat__NvStorageReachable(
     uint32_t obj = 0;
     TEE_Result res;
 
-    // The raw system call: TEE_OpenPersistentObject() panics the TA on
-    // TEE_ERROR_COMMUNICATION.
+    /* TEE_OpenPersistentObject() panics the TA on TEE_ERROR_COMMUNICATION */
     res = _utee_storage_obj_open(CFG_FTPM_TA_TEE_STORAGE_ID,
                                  (void *)&objID, sizeof(objID),
                                  TEE_DATA_FLAG_ACCESS_READ |
@@ -546,7 +538,7 @@ _plat__IsNvAvailable(
     void
     )
 {
-    // Called before each command: write what a failed write back left.
+    /* Called before each command: retry a failed write back */
     if (s_NVWritePending) {
         if (_plat__NvStorageReachable())
             _plat__NvWriteBack();
